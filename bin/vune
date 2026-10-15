@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""vune wrapper: start (or find) the per-playlist mpv daemon, then exec Neovim."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+PLUGIN_DIR = Path(__file__).resolve().parent.parent
+SOCKET_WAIT_S = 5.0
+
+
+def sock_path(playlist: Path) -> Path:
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/tmp/vune-{os.getuid()}"
+    digest = hashlib.sha1(str(playlist).encode()).hexdigest()[:10]
+    return Path(runtime) / "vune" / f"{playlist.stem}-{digest}.sock"
+
+
+def sock_alive(sock: Path) -> bool:
+    with socket.socket(socket.AF_UNIX) as s:
+        try:
+            s.connect(str(sock))
+        except OSError:
+            return False
+    return True
+
+
+def start_mpv(sock: Path, options: list[str], directory: Path | None = None) -> None:
+    sock.parent.mkdir(parents=True, exist_ok=True)
+    sock.unlink(missing_ok=True)
+    cmd = [
+        "mpv",
+        "--idle=yes",
+        "--no-video",
+        "--force-window=no",
+        f"--input-ipc-server={sock}",
+        *options,
+    ]
+    if directory is not None:
+        cmd.append(str(directory))
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + SOCKET_WAIT_S
+    while time.monotonic() < deadline:
+        if sock_alive(sock):
+            return
+        time.sleep(0.05)
+    sys.exit(f"vune: mpv did not open {sock} within {SOCKET_WAIT_S:g}s")
+
+
+def main(argv: list[str]) -> None:
+    # Everything after `--` goes to mpv.
+    split = argv.index("--") if "--" in argv else len(argv)
+    own, mpv_extra = argv[:split], argv[split + 1 :]
+    parser = argparse.ArgumentParser(prog="vune")
+    parser.add_argument("target", type=Path, help="playlist file (.m3u) or directory")
+    ns = parser.parse_args(own)
+
+    target = ns.target.resolve()
+    is_dir = target.is_dir()
+    if not is_dir and not target.exists():
+        target.touch()
+    sock = sock_path(target)
+    if not sock_alive(sock):
+        # Directory mode behaves like: mpv --no-video --replaygain=track DIR
+        options = (["--replaygain=track"] if is_dir else []) + mpv_extra
+        start_mpv(sock, options, target if is_dir else None)
+
+    # Lua string literal: JSON escaping matches Lua for these characters.
+    opts = (
+        "{dir=" + json.dumps(str(target), ensure_ascii=False) + "}" if is_dir else "{}"
+    )
+    args = [
+        "nvim",
+        "-c",
+        f"set rtp+={PLUGIN_DIR} | runtime plugin/vune.lua",
+        "-c",
+        f'lua require("vune").attach("{sock}", {opts})',
+    ]
+    if not is_dir:
+        # Any extension works: the file passed to the wrapper is the playlist.
+        args[3:3] = ["-c", "set filetype=vune"]
+        args.append(str(target))
+    os.execvp("nvim", args)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
