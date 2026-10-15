@@ -72,3 +72,7 @@ If Neovim crashes, mpv keeps running. Running `vune` again re-attaches without r
 1. Blank lines and `#` comment lines break the line-to-index mapping.
 2. Relative paths are not resolved. Use absolute paths.
 3. No library, search, ratings or autoplaylists.
+
+## License
+
+ISC. See [LICENSE](LICENSE).
