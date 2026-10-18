@@ -90,7 +90,8 @@ function M.bind_dir(buf, dir)
         if not vim.api.nvim_buf_is_valid(buf) then
           return
         end
-        if err or #data == 0 then
+        -- With --shuffle mpv briefly reports only the unexpanded directory entry.
+        if err or #data == 0 or (#data == 1 and vim.fn.isdirectory(data[1].filename) == 1) then
           if attempt < 50 then
             vim.defer_fn(function() load(attempt + 1) end, 100)
           else
